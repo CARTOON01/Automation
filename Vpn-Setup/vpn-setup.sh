@@ -49,7 +49,7 @@ configure_server() {
   cat > $WG_CONFIG <<EOL
 [Interface]
 PrivateKey = $(cat /etc/wireguard/server_private.key)
-Address = 10.0.0.1/24
+Address = 10.10.0.1/16
 ListenPort = 51820
 SaveConfig = true
 PostUp = iptables -A FORWARD -i $WG_INTERFACE -j ACCEPT
@@ -67,7 +67,7 @@ configure_firewall() {
 # Add a New Client
 add_client() {
   CLIENT_NAME=$1
-  CLIENT_IP="10.0.0.$((RANDOM % 100 + 2))/32"
+  CLIENT_SUBNET="10.10.$((RANDOM % 254 + 1)).0/24"
 
   if [[ ! "$CLIENT_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
     echo "Invalid client name!"
@@ -84,7 +84,7 @@ add_client() {
 
   echo "[Peer]
 PublicKey = $CLIENT_PUBLIC_KEY
-AllowedIPs = $CLIENT_IP" >> $WG_CONFIG
+AllowedIPs = $CLIENT_SUBNET" >> $WG_CONFIG
 
   systemctl restart wg-quick@$WG_INTERFACE
 
@@ -92,7 +92,7 @@ AllowedIPs = $CLIENT_IP" >> $WG_CONFIG
   cat > $CLIENT_CONFIG <<EOL
 [Interface]
 PrivateKey = $CLIENT_PRIVATE_KEY
-Address = ${CLIENT_IP%/*}
+Address = ${CLIENT_SUBNET%/*}
 DNS = 1.1.1.1
 
 [Peer]
@@ -103,10 +103,10 @@ PersistentKeepalive = 25
 EOL
 
   chmod 600 $CLIENT_CONFIG
-  echo "$(date '+%Y-%m-%d %H:%M:%S') - Client '$CLIENT_NAME' added" | tee -a $LOG_FILE
+  echo "$(date '+%Y-%m-%d %H:%M:%S') - Client '$CLIENT_NAME' added with subnet '$CLIENT_SUBNET'" | tee -a $LOG_FILE
   echo "Client '$CLIENT_NAME' added! Config saved at: $CLIENT_CONFIG"
 
-  # Generate QR code for mobile clients (not needed but I saw this being cool)
+  # Generate QR code for mobile clients (not needed but cool)
   qrencode -t ansiutf8 < $CLIENT_CONFIG
 }
 
