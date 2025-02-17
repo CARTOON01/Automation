@@ -1,4 +1,6 @@
 #!/bin/bash
+# Include comments on every update for documentation purposes
+
 
 # Lock file to prevent multiple instances
 LOCK_FILE="/tmp/wireguard_setup.lock"
@@ -19,9 +21,13 @@ WG_INTERFACE="wg0"
 WG_CONFIG="/etc/wireguard/wg0.conf"
 CLIENT_DIR="/etc/wireguard/clients"
 LOG_FILE="/var/log/wireguard_client.log"
+IP_RANGE_START="10.10.1.100"  # Start of the IP address range
+IP_RANGE_END="10.10.1.200"    # End of the IP address range
+ASSIGNED_IPS_FILE="/etc/wireguard/assigned_ips.txt"
 
 # Ensure log file exists
 touch $LOG_FILE && chmod 600 $LOG_FILE
+touch $ASSIGNED_IPS_FILE && chmod 600 $ASSIGNED_IPS_FILE
 
 # Install WireGuard
 install_wireguard() {
@@ -37,7 +43,7 @@ generate_server_keys() {
   fi
 }
 
-# Detect Public IP
+# Detect Public IP for the VPS
 detect_public_ip() {
   SERVER_IP=$(ip route get 8.8.8.8 | awk '{print $7; exit}')
   echo "Detected Public IP: $SERVER_IP"
@@ -67,35 +73,108 @@ configure_firewall() {
   sudo systemctl start wg-quick@$WG_INTERFACE
 }
 
-# Add a New Client
+# Function to check if an IP is within the range
+is_ip_in_range() {
+  local ip=$1
+  local start_ip=$(echo "$IP_RANGE_START" | awk -F. '{print $1 * 256**3 + $2 * 256**2 + $3 * 256 + $4}')
+  local end_ip=$(echo "$IP_RANGE_END" | awk -F. '{print $1 * 256**3 + $2 * 256**2 + $3 * 256 + $4}')
+  local check_ip=$(echo "$ip" | awk -F. '{print $1 * 256**3 + $2 * 256**2 + $3 * 256 + $4}')
+
+  if (( check_ip >= start_ip && check_ip <= end_ip )); then
+    return 0  # IP is in range
+  else
+    return 1  # IP is not in range
+  fi
+}
+
+# Function to find a free IP address
+find_free_ip() {
+  local ip_start=$(echo "$IP_RANGE_START" | awk -F. '{print $1"."$2".0."$4}')
+  local ip_end=$(echo "$IP_RANGE_END" | awk -F. '{print $1"."$2".0."$4}')
+  local ip=$ip_start
+
+  while is_ip_in_range "$ip"; do
+    if grep -q "^$ip$" "$ASSIGNED_IPS_FILE"; then
+      # IP is assigned, increment to the next IP
+      IFS='.' read -r a b c d <<< "$ip"
+      ((d++))
+      if (( d > 254 )); then
+        echo "No available IP addresses in the range!"
+        return 1
+      fi
+      ip="$a.$b.$c.$d"
+    else
+      # IP is not assigned, check if it's in range and return it
+      echo "$ip"
+      return 0
+    fi
+  done
+  echo "No available IP addresses in the range!"
+  return 1
+}
+
+# Function to assign an IP address
+assign_ip() {
+  local ip=$1
+  echo "$ip" >> "$ASSIGNED_IPS_FILE"
+}
+
+# Function to release an IP address
+release_ip() {
+  local ip=$1
+  sed -i "/^$ip$/d" "$ASSIGNED_IPS_FILE"
+}
+
+# Add a New Client (Modified to use IP address management)
 add_client() {
   CLIENT_NAME=$1
-  CLIENT_SUBNET="10.10.$((RANDOM % 254 + 1)).0/24"
+  DEVICE_NAME=$2
+
+  if [ -z "$DEVICE_NAME" ]; then
+    echo "Device name is required!"
+    echo "Usage: $0 add <client_name> <device_name>"
+    exit 1
+  fi
 
   if [[ ! "$CLIENT_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
     echo "Invalid client name!"
     exit 1
   fi
 
-  mkdir -p $CLIENT_DIR
-  wg genkey | tee $CLIENT_DIR/${CLIENT_NAME}_private.key | wg pubkey > $CLIENT_DIR/${CLIENT_NAME}_public.key
+  if [[ ! "$DEVICE_NAME" =~ ^[a-zA-Z0-9_]+$ ]]; then
+    echo "Invalid device name!"
+    exit 1
+  fi
 
-  CLIENT_PRIVATE_KEY=$(cat $CLIENT_DIR/${CLIENT_NAME}_private.key)
-  CLIENT_PUBLIC_KEY=$(cat $CLIENT_DIR/${CLIENT_NAME}_public.key)
+  # Find a free IP address
+  if ! FREE_IP=$(find_free_ip); then
+    echo "No free IP addresses available!"
+    exit 1
+  fi
+
+  # Assign the IP address
+  assign_ip "$FREE_IP"
+
+  mkdir -p $CLIENT_DIR
+  wg genkey | tee $CLIENT_DIR/${CLIENT_NAME}_${DEVICE_NAME}_private.key | wg pubkey > $CLIENT_DIR/${CLIENT_NAME}_${DEVICE_NAME}_public.key
+
+  CLIENT_PRIVATE_KEY=$(cat $CLIENT_DIR/${CLIENT_NAME}_${DEVICE_NAME}_private.key)
+  CLIENT_PUBLIC_KEY=$(cat $CLIENT_DIR/${CLIENT_NAME}_${DEVICE_NAME}_public.key)
   SERVER_PUBLIC_KEY=$(cat /etc/wireguard/server_public.key)
   detect_public_ip
 
+  # Add the client to the server's configuration
   echo "[Peer]
 PublicKey = $CLIENT_PUBLIC_KEY
-AllowedIPs = $CLIENT_SUBNET" >> $WG_CONFIG
+AllowedIPs = $FREE_IP/32" >> $WG_CONFIG
 
   systemctl restart wg-quick@$WG_INTERFACE
 
-  CLIENT_CONFIG="$CLIENT_DIR/${CLIENT_NAME}.conf"
+  CLIENT_CONFIG="$CLIENT_DIR/${CLIENT_NAME}_${DEVICE_NAME}.conf"
   cat > $CLIENT_CONFIG <<EOL
 [Interface]
 PrivateKey = $CLIENT_PRIVATE_KEY
-Address = ${CLIENT_SUBNET%/*}
+Address = $FREE_IP/32
 DNS = 1.1.1.1
 
 [Peer]
@@ -106,64 +185,35 @@ PersistentKeepalive = 25
 EOL
 
   chmod 600 $CLIENT_CONFIG
-  echo "$(date '+%Y-%m-%d %H:%M:%S') - Client '$CLIENT_NAME' added with subnet '$CLIENT_SUBNET'" | tee -a $LOG_FILE
-  echo "Client '$CLIENT_NAME' added! Config saved at: $CLIENT_CONFIG"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') - Client '$CLIENT_NAME' Device '$DEVICE_NAME' added with IP '$FREE_IP'" | tee -a $LOG_FILE
+  echo "Client '$CLIENT_NAME' Device '$DEVICE_NAME' added! Config saved at: $CLIENT_CONFIG"
 
   # Generate QR code for mobile clients (not needed but cool)
   qrencode -t ansiutf8 < $CLIENT_CONFIG
 }
 
-# Remove a Client
+# Remove a Client (Modified to release IP address)
 remove_client() {
   CLIENT_NAME=$1
-  if ! grep -q "$(cat $CLIENT_DIR/${CLIENT_NAME}_public.key 2>/dev/null)" $WG_CONFIG; then
-    echo "Client '$CLIENT_NAME' not found!"
+  DEVICE_NAME=$2
+
+  if ! grep -q "$(cat $CLIENT_DIR/${CLIENT_NAME}_${DEVICE_NAME}_public.key 2>/dev/null)" $WG_CONFIG; then
+    echo "Client '$CLIENT_NAME' Device '$DEVICE_NAME' not found!"
     exit 1
   fi
 
-  sed -i "/$(cat $CLIENT_DIR/${CLIENT_NAME}_public.key)/,+1d" $WG_CONFIG
-  rm -f $CLIENT_DIR/${CLIENT_NAME}_private.key $CLIENT_DIR/${CLIENT_NAME}_public.key $CLIENT_DIR/${CLIENT_NAME}.conf
+  # Extract the IP address from the WireGuard config
+  CLIENT_IP=$(grep "$(cat $CLIENT_DIR/${CLIENT_NAME}_${DEVICE_NAME}_public.key)" "$WG_CONFIG" -A 1 | tail -n 1 | awk '{print $3}' | sed 's/\/32//')
+
+  sed -i "/$(cat $CLIENT_DIR/${CLIENT_NAME}_${DEVICE_NAME}_public.key)/,+1d" $WG_CONFIG
+  rm -f $CLIENT_DIR/${CLIENT_NAME}_${DEVICE_NAME}_private.key $CLIENT_DIR/${CLIENT_NAME}_${DEVICE_NAME}_public.key $CLIENT_DIR/${CLIENT_NAME}_${DEVICE_NAME}.conf
   systemctl restart wg-quick@$WG_INTERFACE
-  echo "$(date '+%Y-%m-%d %H:%M:%S') - Client '$CLIENT_NAME' removed" | tee -a $LOG_FILE
-  echo "Client '$CLIENT_NAME' has been removed."
-}
 
-# Log Client Connections
-log_connections() {
-  echo "Logging WireGuard connections..."
-  while true; do
-    wg show $WG_INTERFACE latest-handshakes | while read -r line; do
-      CLIENT_KEY=$(echo $line | awk '{print $1}')
-      LAST_HANDSHAKE=$(echo $line | awk '{print $2}')
-      CURRENT_TIME=$(date +%s)
-      TIME_DIFF=$((CURRENT_TIME - LAST_HANDSHAKE))
+  # Release the IP address
+  release_ip "$CLIENT_IP"
 
-      if [ "$TIME_DIFF" -lt 10 ]; then
-        CLIENT_NAME=$(grep -B1 "$CLIENT_KEY" $WG_CONFIG | head -1 | awk '{print $2}')
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - Client '$CLIENT_NAME' connected" | tee -a $LOG_FILE
-      fi
-    done
-    sleep 10
-  done
-}
-
-#Setup of Auto-Logging Services
-setup_service() {
-  cat > /etc/systemd/system/wg-log.service <<EOL
-[Unit]
-Description=WireGuard Client Connection Logger
-After=network.target
-[Service]
-ExecStart=/bin/bash /usr/local/bin/vpn-setup log
-Restart=always
-User=root
-[Install]
-WantedBy=multi-user.target
-EOL
-
-  sudo systemctl daemon-reload
-  sudo systemctl enable wg-log.service
-  sudo systemctl start wg-log.service
+  echo "$(date '+%Y-%m-%d %H:%M:%S') - Client '$CLIENT_NAME' Device '$DEVICE_NAME' removed (IP: $CLIENT_IP released)" | tee -a $LOG_FILE
+  echo "Client '$CLIENT_NAME' Device '$DEVICE_NAME' has been removed."
 }
 
 #Script Commands (very essential)
@@ -176,9 +226,9 @@ if [ "$1" == "install" ]; then
   echo "Don't forget to restart the WireGuard service after installation:"
   echo "sudo systemctl restart wg-quick@$WG_INTERFACE"
 elif [ "$1" == "add" ]; then
-  add_client $2
+  add_client $2 $3 # Pass both client and device name
 elif [ "$1" == "remove" ]; then
-  remove_client $2
+  remove_client $2 $3 # Pass both client and device name
 elif [ "$1" == "log" ]; then
   log_connections
 elif [ "$1" == "service" ]; then
@@ -199,7 +249,7 @@ check_network() {
   fi
 }
 
-# Run network check every 30 seconds (modify as needed)
+# Run network check every 30 seconds
 monitor_network() {
   echo "Starting network monitoring..."
   while true; do
