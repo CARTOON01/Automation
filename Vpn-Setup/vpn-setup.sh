@@ -46,14 +46,17 @@ detect_public_ip() {
 # Configure WireGuard Server
 configure_server() {
   detect_public_ip
+  echo "Enabling IP forwarding..."
+  sudo sysctl -w net.ipv4.ip_forward=1
+  sudo sed -i 's/#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/g' /etc/sysctl.conf
   cat > $WG_CONFIG <<EOL
 [Interface]
 PrivateKey = $(cat /etc/wireguard/server_private.key)
 Address = 10.10.0.1/16
 ListenPort = 51820
 SaveConfig = true
-PostUp = iptables -A FORWARD -i $WG_INTERFACE -j ACCEPT
-PostDown = iptables -D FORWARD -i $WG_INTERFACE -j ACCEPT
+PostUp = iptables -A FORWARD -i $WG_INTERFACE -j ACCEPT; iptables -A FORWARD -o $WG_INTERFACE -j ACCEPT; iptables -t nat -A POSTROUTING -o $(ip route get 8.8.8.8 | awk '{print $5; exit}') -j MASQUERADE
+PostDown = iptables -D FORWARD -i $WG_INTERFACE -j ACCEPT; iptables -D FORWARD -o $WG_INTERFACE -j ACCEPT; iptables -t nat -D POSTROUTING -o $(ip route get 8.8.8.8 | awk '{print $5; exit}') -j MASQUERADE
 EOL
 }
 
@@ -98,7 +101,7 @@ DNS = 1.1.1.1
 [Peer]
 PublicKey = $SERVER_PUBLIC_KEY
 Endpoint = $SERVER_IP:51820
-AllowedIPs = 0.0.0.0/0, ::/0
+AllowedIPs = 10.10.0.0/16
 PersistentKeepalive = 25
 EOL
 
@@ -170,6 +173,8 @@ if [ "$1" == "install" ]; then
   configure_server
   configure_firewall
   echo "WireGuard installed and configured!"
+  echo "Don't forget to restart the WireGuard service after installation:"
+  echo "sudo systemctl restart wg-quick@$WG_INTERFACE"
 elif [ "$1" == "add" ]; then
   add_client $2
 elif [ "$1" == "remove" ]; then
@@ -185,7 +190,7 @@ fi
 # Function to check if the network is up
 check_network() {
   TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-  
+
   # Ping Google's DNS to check connectivity
   if ping -c 3 -W 2 8.8.8.8 > /dev/null 2>&1; then
     echo "$TIMESTAMP - Network is UP" | tee -a $LOG_FILE
