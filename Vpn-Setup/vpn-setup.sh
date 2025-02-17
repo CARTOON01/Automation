@@ -181,3 +181,29 @@ elif [ "$1" == "service" ]; then
 else
   echo "Usage: $0 {install|add|remove|log|service}"
 fi
+
+# Function to check if the network is up
+check_network() {
+  TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+  
+  # Ping Google's DNS to check connectivity
+  if ping -c 3 -W 2 8.8.8.8 > /dev/null 2>&1; then
+    echo "$TIMESTAMP - Network is UP" | tee -a $LOG_FILE
+  else
+    echo "$TIMESTAMP - Network is DOWN" | tee -a $LOG_FILE
+  fi
+}
+
+# Run network check every 30 seconds (modify as needed)
+monitor_network() {
+  echo "Starting network monitoring..."
+  while true; do
+    check_network
+    sleep 30
+  done
+}
+
+# If the script is called with 'network', start network monitoring
+if [ "$1" == "network" ]; then
+  monitor_network
+fi
