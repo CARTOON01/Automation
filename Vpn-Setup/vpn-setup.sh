@@ -21,8 +21,8 @@ WG_INTERFACE="wg0"
 WG_CONFIG="/etc/wireguard/wg0.conf"
 CLIENT_DIR="/etc/wireguard/clients"
 LOG_FILE="/var/log/wireguard_client.log"
-IP_RANGE_START="10.10.1.100"  # Start of the IP address range
-IP_RANGE_END="10.10.1.200"    # End of the IP address range
+IP_RANGE_START="10.10.0.1"  # Start of the IP address range
+IP_RANGE_END="10.10.0.254"    # End of the IP address range
 ASSIGNED_IPS_FILE="/etc/wireguard/assigned_ips.txt"
 
 # Ensure log file exists
