@@ -1,6 +1,4 @@
 #!/bin/bash
-#Ensure to include comments in the script to explain the purpose of each function and variable.
-# Just for documentation purposes :)
 
 # Lock file to prevent multiple instances
 LOCK_FILE="/tmp/wireguard_setup.lock"
