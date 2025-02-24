@@ -74,7 +74,8 @@ get_next_subnet() {
 
   while [ $last_octet -le $max_octet ]; do
     local subnet="10.10.${last_octet}.0/24"
-    if ! grep -q "AllowedIPs = $subnet" "$WG_CONFIG"; then
+    # Check if the subnet is already in use by looking for the IP address
+    if ! grep -q "Address = 10.10.${last_octet}.1/24" "$WG_CONFIG"; then
       echo "$subnet"
       return
     fi
