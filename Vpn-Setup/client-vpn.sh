@@ -2,13 +2,8 @@
 
 # Define variables
 WG_INTERFACE="wg0"
-#LOCAL_NETWORK_INTERFACE="eth0"  # Force local network interface to eth0
+LOCAL_NETWORK_INTERFACE="eth0"  # Force local network interface to eth0
 #INTERNET_INTERFACE="eth0"       # Replace with your internet-facing interface
-
-# Server details for automatic wg0.conf copy
-SERVER_IP="your_server_ip"       # Replace with your server's IP address
-SERVER_USER="your_server_user"     # Replace with your server username
-SERVER_PASSWORD="your_server_password" # Replace with your server password (or use SSH keys)
 
 # Function to detect the internet interface
 detect_internet_interface() {
@@ -27,19 +22,6 @@ detect_local_interface() {
     fi
   done
   echo "eth0" # Default to eth0 if detection fails
-}
-
-# Function to copy the wg0.conf file from the server
-copy_wg0_conf() {
-  echo "Copying wg0.conf from server..."
-  scp "$SERVER_USER@$SERVER_IP:/etc/wireguard/clients/$CLIENT_NAME.conf" /tmp/wg0.conf
-  if [ $? -eq 0 ]; then
-    sudo mv /tmp/wg0.conf /etc/wireguard/wg0.conf
-    echo "wg0.conf copied successfully!"
-  else
-    echo "Failed to copy wg0.conf. Please check your server credentials and client name."
-    exit 1
-  fi
 }
 
 # Install WireGuard
@@ -107,9 +89,6 @@ LOCAL_NETWORK_INTERFACE=$(detect_local_interface)
 echo "Detected Internet Interface: $INTERNET_INTERFACE"
 echo "Detected Local Network Interface: $LOCAL_NETWORK_INTERFACE"
 
-# Copy wg0.conf from server
-copy_wg0_conf
-
 # Get the Raspberry Pi's IP address and subnet from the wg0.conf file
 RASPBERRY_PI_IP=$(grep "^Address = " /etc/wireguard/wg0.conf | awk '{print $3}' | cut -d'/' -f1)
 LOCAL_SUBNET=$(grep "^Address = " /etc/wireguard/wg0.conf | awk '{print $3}')
@@ -119,3 +98,4 @@ configure_dhcp
 configure_wireguard
 
 echo "Raspberry Pi configured as a WireGuard router!"
+echo "Remember to copy the wg0.conf file from the server to /etc/wireguard/"
