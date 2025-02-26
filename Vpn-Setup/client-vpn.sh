@@ -3,11 +3,26 @@
 # Define variables
 WG_INTERFACE="wg0"
 LOCAL_NETWORK_INTERFACE="eth0"  # Force local network interface to eth0
-INTERNET_INTERFACE="eth0"       # Replace with your internet-facing interface
+#INTERNET_INTERFACE="eth0"       # Replace with your internet-facing interface
 
-# Get the Raspberry Pi's IP address and subnet from the wg0.conf file
-RASPBERRY_PI_IP=$(grep "^Address = " /etc/wireguard/wg0.conf | awk '{print $3}' | cut -d'/' -f1)
-LOCAL_SUBNET=$(grep "^Address = " /etc/wireguard/wg0.conf | awk '{print $3}')
+# Function to detect the internet interface
+detect_internet_interface() {
+  INTERFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
+  echo "$INTERFACE"
+}
+
+# Function to detect the local network interface
+detect_local_interface() {
+  INTERNET=$(detect_internet_interface)
+  ALL_INTERFACES=$(ip link show | awk '{print $2}' | tr -d :)
+  for IFACE in $ALL_INTERFACES; do
+    if [ "$IFACE" != "$INTERNET" ] && [ "$IFACE" != "lo" ]; then
+      echo "$IFACE"
+      return
+    fi
+  done
+  echo "eth0" # Default to eth0 if detection fails
+}
 
 # Install WireGuard
 install_wireguard() {
@@ -41,6 +56,7 @@ configure_nat() {
 # Configure DHCP Server (isc-dhcp-server)
 configure_dhcp() {
   echo "Configuring isc-dhcp-server..."
+  sudo apt update
   sudo apt install -y isc-dhcp-server
 
   # Configure DHCP server
