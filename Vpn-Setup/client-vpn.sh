@@ -3,26 +3,11 @@
 # Define variables
 WG_INTERFACE="wg0"
 LOCAL_NETWORK_INTERFACE="eth0"  # Force local network interface to eth0
-#INTERNET_INTERFACE="eth0"       # Replace with your internet-facing interface
+INTERNET_INTERFACE="eth0"       # Replace with your internet-facing interface
 
-# Function to detect the internet interface
-detect_internet_interface() {
-  INTERFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
-  echo "$INTERFACE"
-}
-
-# Function to detect the local network interface
-detect_local_interface() {
-  INTERNET=$(detect_internet_interface)
-  ALL_INTERFACES=$(ip link show | awk '{print $2}' | tr -d :)
-  for IFACE in $ALL_INTERFACES; do
-    if [ "$IFACE" != "$INTERNET" ] && [ "$IFACE" != "lo" ]; then
-      echo "$IFACE"
-      return
-    fi
-  done
-  echo "eth0" # Default to eth0 if detection fails
-}
+# Get the Raspberry Pi's IP address and subnet from the wg0.conf file
+RASPBERRY_PI_IP=$(grep "^Address = " /etc/wireguard/wg0.conf | awk '{print $3}' | cut -d'/' -f1)
+LOCAL_SUBNET=$(grep "^Address = " /etc/wireguard/wg0.conf | awk '{print $3}')
 
 # Install WireGuard
 install_wireguard() {
@@ -53,22 +38,26 @@ configure_nat() {
   sudo netfilter-persistent save
 }
 
-# Configure DHCP Server (dnsmasq)
+# Configure DHCP Server (isc-dhcp-server)
 configure_dhcp() {
-  echo "Configuring DHCP server (dnsmasq)..."
-  sudo apt install -y dnsmasq
+  echo "Configuring isc-dhcp-server..."
+  sudo apt install -y isc-dhcp-server
 
-  # Backup the original dnsmasq.conf
-  sudo mv /etc/dnsmasq.conf /etc/dnsmasq.conf.orig
-
-  cat > /etc/dnsmasq.conf <<EOL
-interface=$LOCAL_NETWORK_INTERFACE
-dhcp-range=10.10.100.10,10.10.100.254,255.255.255.0,12h
-dhcp-option=option:router,$RASPBERRY_PI_IP
-dhcp-option=option:dns-server,1.1.1.1 # Use a public DNS server
+  # Configure DHCP server
+  cat > /etc/dhcp/dhcpd.conf <<EOL
+subnet $LOCAL_SUBNET netmask 255.255.255.0 {
+  range 10.10.100.10 10.10.100.254;
+  option routers $RASPBERRY_PI_IP;
+  option domain-name-servers 1.1.1.1; # Or your preferred DNS server
+  default-lease-time 43200; # 12 hours
+  max-lease-time 86400;   # 24 hours
+}
 EOL
 
-  sudo systemctl restart dnsmasq
+  # Tell DHCP server to listen on the correct interface
+  sudo sed -i "s/INTERFACESv4=\"\"/INTERFACESv4=\"$LOCAL_NETWORK_INTERFACE\"/g" /etc/default/isc-dhcp-server
+
+  sudo systemctl restart isc-dhcp-server
 }
 
 # Configure WireGuard Interface
