@@ -22,13 +22,25 @@ enable_ip_forwarding() {
 # Configure NAT (Masquerading)
 configure_nat() {
   echo "Configuring NAT..."
+
+  # Clear existing rules to avoid duplicates
+  sudo iptables -F FORWARD
+  sudo iptables -t nat -F POSTROUTING
+
+  # Add the MASQUERADE rule for the local subnet
   sudo iptables -t nat -A POSTROUTING -o "$INTERNET_INTERFACE" -s "$LOCAL_SUBNET" -j MASQUERADE
+
   # Allow forwarding to the VPN subnet
   sudo iptables -A FORWARD -i "$LOCAL_NETWORK_INTERFACE" -o "$WG_INTERFACE" -d 10.10.0.0/16 -j ACCEPT
   sudo iptables -A FORWARD -i "$WG_INTERFACE" -o "$LOCAL_NETWORK_INTERFACE" -s 10.10.0.0/16 -j ACCEPT
+
   # Allow forwarding between subnets
   sudo iptables -A FORWARD -i "$LOCAL_NETWORK_INTERFACE" -o "$WG_INTERFACE" -j ACCEPT
   sudo iptables -A FORWARD -i "$WG_INTERFACE" -o "$LOCAL_NETWORK_INTERFACE" -j ACCEPT
+
+  # Set default policy to ACCEPT
+  sudo iptables -P FORWARD ACCEPT
+
   # Make NAT and forwarding rules persistent
   sudo apt install -y iptables-persistent
   sudo netfilter-persistent save
