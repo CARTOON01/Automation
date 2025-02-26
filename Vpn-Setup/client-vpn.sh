@@ -3,26 +3,7 @@
 # Define variables
 WG_INTERFACE="wg0"
 LOCAL_NETWORK_INTERFACE="eth0"  # Force local network interface to eth0
-#INTERNET_INTERFACE="eth0"       # Replace with your internet-facing interface
-
-# Function to detect the internet interface
-detect_internet_interface() {
-  INTERFACE=$(ip route get 8.8.8.8 | awk '{print $5; exit}')
-  echo "$INTERFACE"
-}
-
-# Function to detect the local network interface
-detect_local_interface() {
-  INTERNET=$(detect_internet_interface)
-  ALL_INTERFACES=$(ip link show | awk '{print $2}' | tr -d :)
-  for IFACE in $ALL_INTERFACES; do
-    if [ "$IFACE" != "$INTERNET" ] && [ "$IFACE" != "lo" ]; then
-      echo "$IFACE"
-      return
-    fi
-  done
-  echo "eth0" # Default to eth0 if detection fails
-}
+INTERNET_INTERFACE="eth0"       # Replace with your internet-facing interface
 
 # Install WireGuard
 install_wireguard() {
@@ -64,7 +45,7 @@ configure_dhcp() {
 subnet $LOCAL_SUBNET netmask 255.255.255.0 {
   range 10.10.100.10 10.10.100.254;
   option routers $RASPBERRY_PI_IP;
-  option domain-name-servers 1.1.1.1; # Or your preferred DNS server
+  option domain-name-servers 1.1.1.1; # Use a public DNS server
   default-lease-time 43200; # 12 hours
   max-lease-time 86400;   # 24 hours
 }
@@ -79,20 +60,19 @@ EOL
 # Configure WireGuard Interface
 configure_wireguard() {
   echo "Configuring WireGuard interface..."
-  # You'll need to manually copy the wg0.conf file to /etc/wireguard/
-  # from the server.  This script assumes it's already there.
-  sudo wg-quick up wg0
+  # Check if wg0 already exists
+  if ip link show wg0 >/dev/null 2>&1; then
+    echo "wg0 interface already exists. Skipping wg-quick up wg0"
+  else
+    # You'll need to manually copy the wg0.conf file to /etc/wireguard/
+    # from the server.  This script assumes it's already there.
+    sudo wg-quick up wg0
+  fi
 }
 
 # Main script execution
 install_wireguard
 enable_ip_forwarding
-
-# Detect interfaces
-INTERNET_INTERFACE=$(detect_internet_interface)
-LOCAL_NETWORK_INTERFACE=$(detect_local_interface)
-echo "Detected Internet Interface: $INTERNET_INTERFACE"
-echo "Detected Local Network Interface: $LOCAL_NETWORK_INTERFACE"
 
 # Get the Raspberry Pi's IP address and subnet from the wg0.conf file
 RASPBERRY_PI_IP=$(grep "^Address = " /etc/wireguard/wg0.conf | awk '{print $3}' | cut -d'/' -f1)
