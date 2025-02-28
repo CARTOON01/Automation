@@ -1,9 +1,12 @@
 #!/bin/bash
+# This script is intended to be run on a Raspberry Pi
+# Please Document every change you make to this script :)
 
 # Define variables
 WG_INTERFACE="wg0"
 LOCAL_NETWORK_INTERFACE="eth0"  # Force local network interface to eth0
 INTERNET_INTERFACE="eth0"       # Replace with your internet-facing interface
+LOCAL_SUBNET=$(grep "^Address = " /etc/wireguard/wg0.conf | awk '{print $3}')
 
 # Install WireGuard
 install_wireguard() {
@@ -22,51 +25,16 @@ enable_ip_forwarding() {
 # Configure NAT (Masquerading)
 configure_nat() {
   echo "Configuring NAT..."
-
-  # Clear existing rules to avoid duplicates
-  sudo iptables -F FORWARD
-  sudo iptables -t nat -F POSTROUTING
-
-  # Add the MASQUERADE rule for the local subnet
   sudo iptables -t nat -A POSTROUTING -o "$INTERNET_INTERFACE" -s "$LOCAL_SUBNET" -j MASQUERADE
-
   # Allow forwarding to the VPN subnet
   sudo iptables -A FORWARD -i "$LOCAL_NETWORK_INTERFACE" -o "$WG_INTERFACE" -d 10.10.0.0/16 -j ACCEPT
   sudo iptables -A FORWARD -i "$WG_INTERFACE" -o "$LOCAL_NETWORK_INTERFACE" -s 10.10.0.0/16 -j ACCEPT
-
   # Allow forwarding between subnets
   sudo iptables -A FORWARD -i "$LOCAL_NETWORK_INTERFACE" -o "$WG_INTERFACE" -j ACCEPT
   sudo iptables -A FORWARD -i "$WG_INTERFACE" -o "$LOCAL_NETWORK_INTERFACE" -j ACCEPT
-
-  # Set default policy to ACCEPT
-  sudo iptables -P FORWARD ACCEPT
-
   # Make NAT and forwarding rules persistent
   sudo apt install -y iptables-persistent
   sudo netfilter-persistent save
-}
-
-# Configure DHCP Server (isc-dhcp-server)
-configure_dhcp() {
-  echo "Configuring isc-dhcp-server..."
-  sudo apt update
-  sudo apt install -y isc-dhcp-server
-
-  # Configure DHCP server
-  cat > /etc/dhcp/dhcpd.conf <<EOL
-subnet $LOCAL_SUBNET netmask 255.255.255.0 {
-  range 10.10.100.10 10.10.100.254;
-  option routers $RASPBERRY_PI_IP;
-  option domain-name-servers 1.1.1.1; # Use a public DNS server
-  default-lease-time 43200; # 12 hours
-  max-lease-time 86400;   # 24 hours
-}
-EOL
-
-  # Tell DHCP server to listen on the correct interface
-  sudo sed -i "s/INTERFACESv4=\"\"/INTERFACESv4=\"$LOCAL_NETWORK_INTERFACE\"/g" /etc/default/isc-dhcp-server
-
-  sudo systemctl restart isc-dhcp-server
 }
 
 # Configure WireGuard Interface
@@ -82,6 +50,14 @@ configure_wireguard() {
   fi
 }
 
+# Allow HTTP traffic (example)
+allow_http() {
+  echo "Allowing HTTP traffic on port 80..."
+  sudo iptables -A INPUT -i "$LOCAL_NETWORK_INTERFACE" -p tcp --dport 80 -j ACCEPT
+  sudo iptables -A FORWARD -i "$LOCAL_NETWORK_INTERFACE" -p tcp --dport 80 -j ACCEPT
+  sudo netfilter-persistent save
+}
+
 # Main script execution
 install_wireguard
 enable_ip_forwarding
@@ -91,8 +67,8 @@ RASPBERRY_PI_IP=$(grep "^Address = " /etc/wireguard/wg0.conf | awk '{print $3}' 
 LOCAL_SUBNET=$(grep "^Address = " /etc/wireguard/wg0.conf | awk '{print $3}')
 
 configure_nat
-configure_dhcp
 configure_wireguard
+allow_http # Allow HTTP traffic
 
 echo "Raspberry Pi configured as a WireGuard router!"
 echo "Remember to copy the wg0.conf file from the server to /etc/wireguard/"
