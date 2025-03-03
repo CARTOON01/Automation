@@ -6,8 +6,8 @@ LOCAL_NETWORK_INTERFACE="wlan0"  # Local network interface (Wi-Fi)
 INTERNET_INTERFACE="eth0"       # Internet-facing interface (Ethernet)
 
 # Get the Raspberry Pi's IP address and subnet from the wg0.conf file
-RASPBERRY_PI_IP=$(grep "^Address = " /etc/wireguard/wg0.conf | awk '{print $3}' | cut -d'/' -f1)
-LOCAL_SUBNET=$(grep "^Address = " /etc/wireguard/wg0.conf | awk '{print $3}')
+RASPBERRY_PI_IP=$(awk -F' = ' '/Address/ {print $2}' /etc/wireguard/wg0.conf | cut -d'/' -f1)
+LOCAL_SUBNET=$(awk -F' = ' '/Address/ {print $2}')
 
 # Extract the subnet base (10.10.X) from the RASPBERRY_PI_IP
 SUBNET_BASE=$(echo "$RASPBERRY_PI_IP" | awk -F. '{print $1"."$2"."$3}')
