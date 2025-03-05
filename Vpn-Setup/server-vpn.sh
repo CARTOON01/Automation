@@ -10,8 +10,7 @@ LOG_FILE="/var/log/wireguard_server.log"
 # Install WireGuard
 install_wireguard() {
   echo "Installing WireGuard..." | tee -a $LOG_FILE
-  sudo apt update
-  sudo apt install -y wireguard qrencode
+  sudo apt update && sudo apt install -y wireguard qrencode
 }
 
 # Generate Server Keys
@@ -27,20 +26,16 @@ detect_public_ip() {
   echo "Detected Public IP: $SERVER_IP" | tee -a $LOG_FILE
 }
 
-# Get the Next Available Subnet
+# Get Next Available Subnet
 get_next_subnet() {
   touch "$SUBNET_FILE"
-  local last_octet=1
-  local max_octet=254
-
-  while [ $last_octet -le $max_octet ]; do
-    local subnet="10.10.${last_octet}.0/24"
+  for i in {1..254}; do
+    subnet="10.10.${i}.0/24"
     if ! grep -q "$subnet" "$SUBNET_FILE"; then
       echo "$subnet" >> "$SUBNET_FILE"
       echo "$subnet"
       return
     fi
-    ((last_octet++))
   done
   echo ""  # No subnets available
 }
@@ -58,33 +53,23 @@ SaveConfig = true
 PostUp = iptables -t nat -A POSTROUTING -o eth0 -s 10.10.0.0/16 -j MASQUERADE
 PostDown = iptables -t nat -D POSTROUTING -o eth0 -s 10.10.0.0/16 -j MASQUERADE
 EOL
+  sudo systemctl enable wg-quick@$WG_INTERFACE
+  sudo systemctl start wg-quick@$WG_INTERFACE
 }
 
-# Enable IP Forwarding and Firewall Rules
+# Configure Firewall
 configure_firewall() {
   echo "Configuring Firewall..." | tee -a $LOG_FILE
   sudo sysctl -w net.ipv4.ip_forward=1
   sudo sed -i 's/#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/g' /etc/sysctl.conf
   sudo ufw allow 51820/udp
-
-  # Block SSH between clients
-  sudo iptables -A FORWARD -i $WG_INTERFACE -o $WG_INTERFACE -p tcp --dport 22 -j REJECT
-  sudo iptables -A FORWARD -i $WG_INTERFACE -o $WG_INTERFACE -p tcp --sport 22 -j REJECT
-
-  # Allow SSH from VPS (10.10.0.1) to clients
-  sudo iptables -I FORWARD -i $WG_INTERFACE -o $WG_INTERFACE -p tcp --dport 22 -s 10.10.0.1 -j ACCEPT
-  sudo iptables -I FORWARD -i $WG_INTERFACE -o $WG_INTERFACE -p tcp --sport 22 -d 10.10.0.1 -j ACCEPT
-
-  # Save rules
-  sudo iptables-save | sudo tee /etc/iptables/rules.v4
 }
 
-
-# Add a New Client
+# Add New Client
 add_client() {
   CLIENT_NAME=$1
   if [[ -z "$CLIENT_NAME" ]]; then
-    echo "Usage: $0 add <client_name>"
+    echo "Usage: server-vpn add <client_name>"
     exit 1
   fi
 
@@ -104,7 +89,7 @@ add_client() {
 PublicKey = $CLIENT_PUBLIC_KEY
 AllowedIPs = $CLIENT_SUBNET" >> $WG_CONFIG
 
-  systemctl restart wg-quick@$WG_INTERFACE
+  sudo systemctl restart wg-quick@$WG_INTERFACE
 
   mkdir -p $CLIENT_DIR
   CLIENT_CONFIG="$CLIENT_DIR/${CLIENT_NAME}.conf"
@@ -125,6 +110,45 @@ EOL
   echo "Client '$CLIENT_NAME' added! Config saved at: $CLIENT_CONFIG"
 }
 
+# Remove a Client
+remove_client() {
+  CLIENT_NAME=$1
+  if [[ -z "$CLIENT_NAME" ]]; then
+    echo "Usage: server-vpn remove <client_name>"
+    exit 1
+  fi
+
+  CLIENT_CONFIG="$CLIENT_DIR/${CLIENT_NAME}.conf"
+  if [ ! -f "$CLIENT_CONFIG" ]; then
+    echo "Client '$CLIENT_NAME' not found!"
+    exit 1
+  fi
+
+  CLIENT_PUBLIC_KEY=$(grep "PrivateKey" "$CLIENT_CONFIG" | cut -d' ' -f3 | wg pubkey)
+
+  sudo sed -i "/$CLIENT_PUBLIC_KEY/,+1d" "$WG_CONFIG"
+  sudo rm -f "$CLIENT_CONFIG"
+
+  sudo systemctl restart wg-quick@$WG_INTERFACE
+  echo "Client '$CLIENT_NAME' removed!"
+}
+
+# List Clients
+list_clients() {
+  echo "Registered VPN Clients:"
+  ls -1 $CLIENT_DIR | sed 's/\.conf$//'
+}
+
+# Uninstall WireGuard
+uninstall_wireguard() {
+  echo "Removing WireGuard..." | tee -a $LOG_FILE
+  sudo systemctl stop wg-quick@$WG_INTERFACE
+  sudo systemctl disable wg-quick@$WG_INTERFACE
+  sudo apt remove --purge -y wireguard qrencode
+  sudo rm -rf /etc/wireguard
+  echo "WireGuard removed!"
+}
+
 # Main Execution
 case "$1" in
   install)
@@ -137,8 +161,17 @@ case "$1" in
   add)
     add_client $2
     ;;
+  remove)
+    remove_client $2
+    ;;
+  list)
+    list_clients
+    ;;
+  uninstall)
+    uninstall_wireguard
+    ;;
   *)
-    echo "Usage: $0 {install|add <client_name>}"
+    echo "Usage: server-vpn {install|add <client_name>|remove <client_name>|list|uninstall}"
     exit 1
     ;;
 esac
