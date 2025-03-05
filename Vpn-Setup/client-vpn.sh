@@ -27,8 +27,7 @@ get_client_subnet() {
 # Install WireGuard
 install_wireguard() {
   echo "Installing WireGuard..." | tee -a $LOG_FILE
-  sudo apt update
-  sudo apt install -y wireguard
+  sudo apt update && sudo apt install -y wireguard
 }
 
 # Retrieve Configuration from Server
@@ -40,6 +39,7 @@ fetch_config() {
 
 # Configure WireGuard
 configure_wireguard() {
+  echo "Configuring WireGuard..." | tee -a $LOG_FILE
   sudo cp $CLIENT_CONFIG $WG_CONFIG
   sudo systemctl enable wg-quick@$WG_INTERFACE
   sudo systemctl restart wg-quick@$WG_INTERFACE
@@ -47,12 +47,29 @@ configure_wireguard() {
 
 # Enable IP Forwarding & NAT
 setup_routing() {
+  echo "Setting up routing and NAT..." | tee -a $LOG_FILE
   CLIENT_IP=$(get_client_subnet)
   LOCAL_SUBNET="${CLIENT_IP%.*}.0/24"
+  VPS_IP="10.10.0.1"  # Adjust if needed
 
-  sudo sysctl -w net.ipv4.ip_forward=1
+  # Enable IP Forwarding
+  echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward
+
+  # Configure IPTABLES for NAT
   sudo iptables -t nat -A POSTROUTING -s $LOCAL_SUBNET -o $INTERNET_INTERFACE -j MASQUERADE
+
+  # Allow VPN clients to communicate with each other (EXCEPT SSH)
+  sudo iptables -A FORWARD -i $WG_INTERFACE -o $WG_INTERFACE -p tcp --dport 22 -j REJECT
+  sudo iptables -A FORWARD -i $WG_INTERFACE -o $WG_INTERFACE -p tcp --sport 22 -j REJECT
+
+  # Allow SSH from VPS (10.10.0.1)
+  sudo iptables -I FORWARD -i $WG_INTERFACE -o $WG_INTERFACE -p tcp --dport 22 -s $VPS_IP -j ACCEPT
+  sudo iptables -I FORWARD -i $WG_INTERFACE -o $WG_INTERFACE -p tcp --sport 22 -d $VPS_IP -j ACCEPT
+
+  # Save iptables rules
+  sudo iptables-save | sudo tee /etc/iptables/rules.v4
 }
+
 
 # Monitor VPN Connection
 monitor_connection() {
@@ -77,8 +94,12 @@ case "$1" in
     configure_wireguard
     monitor_connection
     ;;
+  restart)
+    echo "Restarting WireGuard..." | tee -a $LOG_FILE
+    sudo systemctl restart wg-quick@$WG_INTERFACE
+    ;;
   *)
-    echo "Usage: $0 {install|start}"
+    echo "Usage: $0 {install|start|restart}"
     exit 1
     ;;
 esac

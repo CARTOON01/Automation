@@ -66,7 +66,19 @@ configure_firewall() {
   sudo sysctl -w net.ipv4.ip_forward=1
   sudo sed -i 's/#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/g' /etc/sysctl.conf
   sudo ufw allow 51820/udp
+
+  # Block SSH between clients
+  sudo iptables -A FORWARD -i $WG_INTERFACE -o $WG_INTERFACE -p tcp --dport 22 -j REJECT
+  sudo iptables -A FORWARD -i $WG_INTERFACE -o $WG_INTERFACE -p tcp --sport 22 -j REJECT
+
+  # Allow SSH from VPS (10.10.0.1) to clients
+  sudo iptables -I FORWARD -i $WG_INTERFACE -o $WG_INTERFACE -p tcp --dport 22 -s 10.10.0.1 -j ACCEPT
+  sudo iptables -I FORWARD -i $WG_INTERFACE -o $WG_INTERFACE -p tcp --sport 22 -d 10.10.0.1 -j ACCEPT
+
+  # Save rules
+  sudo iptables-save | sudo tee /etc/iptables/rules.v4
 }
+
 
 # Add a New Client
 add_client() {
