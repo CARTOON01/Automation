@@ -1,59 +1,85 @@
 #!/bin/bash
 
+# WireGuard Server Configuration
 WG_INTERFACE="wg0"
 WG_CONFIG="/etc/wireguard/wg0.conf"
 CLIENT_DIR="/etc/wireguard/clients"
-LOG_FILE="/var/log/wireguard_server.log"
 SUBNET_FILE="/etc/wireguard/used_subnets"
-BACKUP_DIR="/etc/wireguard/backup"
+LOG_FILE="/var/log/wireguard_server.log"
 
-mkdir -p "$CLIENT_DIR" "$BACKUP_DIR"
-touch "$LOG_FILE"
-
-# Function to backup existing config
-backup_config() {
-  TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-  cp "$WG_CONFIG" "$BACKUP_DIR/wg0_$TIMESTAMP.conf"
-  echo "Backup created: $BACKUP_DIR/wg0_$TIMESTAMP.conf" | tee -a "$LOG_FILE"
-}
-
-# Function to check and apply necessary updates
-update_config() {
-  echo "Checking for configuration updates..." | tee -a "$LOG_FILE"
-
-  # Backup before modifying
-  backup_config
-
-  # Fetch new settings
-  NEW_CONFIG=$(cat "$WG_CONFIG")
-
-  # If file exists, check for differences
-  if [ -f "$WG_CONFIG" ]; then
-    DIFF_OUTPUT=$(diff "$BACKUP_DIR/wg0_$TIMESTAMP.conf" "$WG_CONFIG")
-    
-    if [ -z "$DIFF_OUTPUT" ]; then
-      echo "No changes detected in configuration." | tee -a "$LOG_FILE"
-    else
-      echo "Applying necessary updates..." | tee -a "$LOG_FILE"
-      systemctl restart wg-quick@"$WG_INTERFACE"
-    fi
-  fi
-}
-
-# Function to install WireGuard
+# Install WireGuard
 install_wireguard() {
-  echo "Installing WireGuard..." | tee -a "$LOG_FILE"
+  echo "Installing WireGuard..." | tee -a $LOG_FILE
   sudo apt update && sudo apt install -y wireguard qrencode
 }
 
-# Function to remove WireGuard
-uninstall_wireguard() {
-  echo "Uninstalling WireGuard..." | tee -a "$LOG_FILE"
-  sudo apt remove --purge -y wireguard qrencode
-  rm -rf /etc/wireguard
+# Generate Server Keys
+generate_server_keys() {
+  if [ ! -f "/etc/wireguard/server_private.key" ]; then
+    wg genkey | tee /etc/wireguard/server_private.key | wg pubkey > /etc/wireguard/server_public.key
+  fi
 }
 
-# Function to add a new client
+# Detect Public IP of VPS
+detect_public_ip() {
+  SERVER_IP=$(curl -s ifconfig.me)
+  echo "Detected Public IP: $SERVER_IP" | tee -a $LOG_FILE
+}
+
+# Get the Next Available Subnet
+get_next_subnet() {
+  touch "$SUBNET_FILE"
+  local last_octet=1
+  local max_octet=254
+
+  while [ $last_octet -le $max_octet ]; do
+    local subnet="10.10.${last_octet}.0/24"
+    if ! grep -q "$subnet" "$SUBNET_FILE"; then
+      echo "$subnet" >> "$SUBNET_FILE"
+      echo "$subnet"
+      return
+    fi
+    ((last_octet++))
+  done
+  echo ""  # No subnets available
+}
+
+# Configure WireGuard Server
+configure_server() {
+  detect_public_ip
+  echo "Configuring WireGuard Server..." | tee -a $LOG_FILE
+
+  cat > $WG_CONFIG <<EOL
+[Interface]
+PrivateKey = $(cat /etc/wireguard/server_private.key)
+Address = 10.10.0.1/16
+ListenPort = 51820
+SaveConfig = true
+PostUp = iptables -t nat -A POSTROUTING -o eth0 -s 10.10.0.0/16 -j MASQUERADE
+PostDown = iptables -t nat -D POSTROUTING -o eth0 -s 10.10.0.0/16 -j MASQUERADE
+EOL
+}
+
+# Block communication between clients but allow VPS access
+block_inter_client_traffic() {
+  iptables -D FORWARD -i $WG_INTERFACE -s 10.10.0.0/16 -d 10.10.0.0/16 -j DROP 2>/dev/null
+  iptables -D FORWARD -i $WG_INTERFACE -s 10.10.0.1 -j ACCEPT 2>/dev/null
+
+  iptables -A FORWARD -i $WG_INTERFACE -s 10.10.0.0/16 -d 10.10.0.0/16 -j DROP
+  iptables -A FORWARD -i $WG_INTERFACE -s 10.10.0.1 -j ACCEPT  # Allow VPS to access all clients
+}
+
+# Enable IP Forwarding and Firewall Rules
+configure_firewall() {
+  echo "Configuring Firewall..." | tee -a $LOG_FILE
+  sudo sysctl -w net.ipv4.ip_forward=1
+  sudo sed -i 's/#net.ipv4.ip_forward=1/net.ipv4.ip_forward=1/g' /etc/sysctl.conf
+  sudo ufw allow 51820/udp
+
+  block_inter_client_traffic
+}
+
+# Add a New Client
 add_client() {
   CLIENT_NAME=$1
   if [[ -z "$CLIENT_NAME" ]]; then
@@ -61,37 +87,44 @@ add_client() {
     exit 1
   fi
 
+  CLIENT_SUBNET=$(get_next_subnet)
+  if [ -z "$CLIENT_SUBNET" ]; then
+    echo "No more subnets available!"
+    exit 1
+  fi
+
   CLIENT_PRIVATE_KEY=$(wg genkey)
   CLIENT_PUBLIC_KEY=$(echo "$CLIENT_PRIVATE_KEY" | wg pubkey)
   SERVER_PUBLIC_KEY=$(cat /etc/wireguard/server_public.key)
 
-  CLIENT_IP="10.10.0.$((100 + RANDOM % 100))"
+  CLIENT_IP=$(echo "$CLIENT_SUBNET" | awk -F. '{print $1"."$2"."$3".1"}')
 
   echo "[Peer]
 PublicKey = $CLIENT_PUBLIC_KEY
-AllowedIPs = $CLIENT_IP/32" >> "$WG_CONFIG"
+AllowedIPs = $CLIENT_SUBNET" >> $WG_CONFIG
 
-  systemctl restart wg-quick@"$WG_INTERFACE"
+  systemctl restart wg-quick@$WG_INTERFACE
 
+  mkdir -p $CLIENT_DIR
   CLIENT_CONFIG="$CLIENT_DIR/${CLIENT_NAME}.conf"
-  cat > "$CLIENT_CONFIG" <<EOL
+  cat > $CLIENT_CONFIG <<EOL
 [Interface]
 PrivateKey = $CLIENT_PRIVATE_KEY
-Address = $CLIENT_IP/32
+Address = $CLIENT_IP/24
 DNS = 1.1.1.1
 
 [Peer]
 PublicKey = $SERVER_PUBLIC_KEY
-Endpoint = $(curl -s ifconfig.me):51820
+Endpoint = $SERVER_IP:51820
 AllowedIPs = 0.0.0.0/0, ::/0
 PersistentKeepalive = 25
 EOL
 
   chmod 600 "$CLIENT_CONFIG"
-  echo "Client '$CLIENT_NAME' added! Config saved at: $CLIENT_CONFIG" | tee -a "$LOG_FILE"
+  echo "Client '$CLIENT_NAME' added! Config saved at: $CLIENT_CONFIG"
 }
 
-# Function to remove a client
+# Remove a Client
 remove_client() {
   CLIENT_NAME=$1
   if [[ -z "$CLIENT_NAME" ]]; then
@@ -99,33 +132,70 @@ remove_client() {
     exit 1
   fi
 
-  sed -i "/# $CLIENT_NAME/,/# End $CLIENT_NAME/d" "$WG_CONFIG"
-  rm -f "$CLIENT_DIR/${CLIENT_NAME}.conf"
-  systemctl restart wg-quick@"$WG_INTERFACE"
-  echo "Client '$CLIENT_NAME' removed." | tee -a "$LOG_FILE"
+  CLIENT_CONFIG="$CLIENT_DIR/${CLIENT_NAME}.conf"
+  if [[ ! -f "$CLIENT_CONFIG" ]]; then
+    echo "Client configuration not found!"
+    exit 1
+  fi
+
+  CLIENT_IP=$(grep "Address" "$CLIENT_CONFIG" | awk '{print $3}' | cut -d'/' -f1)
+  sed -i "/$CLIENT_IP/d" "$WG_CONFIG"
+  rm -f "$CLIENT_CONFIG"
+
+  systemctl restart wg-quick@$WG_INTERFACE
+  echo "Client '$CLIENT_NAME' removed!"
+}
+
+# List all Clients
+list_clients() {
+  echo "Registered Clients:"
+  ls $CLIENT_DIR/*.conf 2>/dev/null | xargs -n 1 basename | sed 's/.conf//'
+}
+
+# Uninstall WireGuard and Remove All Clients
+uninstall_wireguard() {
+  echo "Uninstalling WireGuard..." | tee -a $LOG_FILE
+  systemctl stop wg-quick@$WG_INTERFACE
+  apt remove --purge -y wireguard
+  rm -rf /etc/wireguard
+  echo "WireGuard removed!"
+}
+
+# Check if the script was updated and apply necessary changes
+update_existing_configs() {
+  echo "Checking for existing configurations..." | tee -a $LOG_FILE
+  if [[ -f "$WG_CONFIG" ]]; then
+    block_inter_client_traffic
+    systemctl restart wg-quick@$WG_INTERFACE
+  fi
 }
 
 # Main Execution
 case "$1" in
   install)
     install_wireguard
-    update_config
+    generate_server_keys
+    configure_server
+    configure_firewall
     echo "WireGuard Server Installed!"
     ;;
   add)
-    add_client "$2"
+    add_client $2
     ;;
   remove)
-    remove_client "$2"
+    remove_client $2
+    ;;
+  list)
+    list_clients
     ;;
   uninstall)
     uninstall_wireguard
     ;;
   update)
-    update_config
+    update_existing_configs
     ;;
   *)
-    echo "Usage: $0 {install|add <client_name>|remove <client_name>|uninstall|update}"
+    echo "Usage: $0 {install|add <client_name>|remove <client_name>|list|uninstall|update}"
     exit 1
     ;;
 esac
